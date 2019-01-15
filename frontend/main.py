@@ -25,15 +25,20 @@ class ControllerRecordThread(QtCore.QThread):
     frequency = 100; #Hz
     galil_handle = None;
 
-    def __init__(self, galil_handle=None, frequency=100):
+    def __init__(self, ip_address=None, frequency=100):
         QtCore.QThread.__init__(self)
         self.frequency = frequency
-        # Caller is responsible to make sure that galil_handle is ok
-        self.galil_handle = galil_handle
+        # Caller is responsible to make sure that ip address is ok
+        self.galil_handle = gclib.py();
+        try:
+            self.galil_handle.GOpen('%s --direct -s ALL' % ip_address)
+        except gclib.GclibError:
+            print("ERROR: recording thread uanble to connect to controller")
+
 
     def run(self):
         print('Recording Thread running...')
-        nsamples = int(1*self.frequency)
+        nsamples = int(10*self.frequency)
         start_timestamp = datetime.now()
         timestamps = np.zeros(nsamples)
         values = np.zeros(nsamples)
@@ -61,6 +66,7 @@ class ControllerRecordThread(QtCore.QThread):
 class MainWindow(QMainWindow):
     legend = None;
     galil_handle = None;
+    galil_ip = None;
     recording_thread = None;
 
     def __init__(self):
@@ -105,6 +111,7 @@ class MainWindow(QMainWindow):
             ip_address = connect_dialog.ipLineEdit.text()
             try:
                 self.galil_handle.GOpen('%s --direct -s ALL' % ip_address)
+                self.ip_address = ip_address
                 #print('placeholder')
             except gclib.GclibError:
                 waitmsg_box.close()
@@ -118,7 +125,6 @@ class MainWindow(QMainWindow):
             self.statusbar.showMessage('Connected to %s.' % ip_address)
 
             print(self.galil_handle.GInfo())
-            print(disp(val))
             print('accepted!')
 
     def change_signal_widget(self):
@@ -147,21 +153,73 @@ class MainWindow(QMainWindow):
         self.galil_handle.GCommand('OE 1')      # motor off on error
         self.galil_handle.GCommand('MT 1')      # motor type
         self.galil_handle.GCommand('LC 1')      # reduce holding current
-        self.galil_handle.GCommand('AC 20000') # Acceleration
-        self.galil_handle.GCommand('DC 20000') # Decceleration
-        self.galil_handle.GCommand('DC 8000')   # Speed
+        self.galil_handle.GCommand('AC 20000')  # Acceleration
+        self.galil_handle.GCommand('DC 20000')  # Decceleration
+        self.galil_handle.GCommand('DC 18000')  # Speed
+        self.galil_handle.GCommand('IT .5')     # Motion smoothing
         self.galil_handle.GCommand('BAA')       # Specify A - axis for sinusoidal	 commutation
         self.galil_handle.GCommand('BMA = %d' % SYSTEM_STEPS_PER_CYCLE) # Specify counts/magnetic cycle
         self.galil_handle.GCommand('BZA = 4')   # Commutate motor using 3V
         
         #TODO Tell user to put syringe in start position.
+        alert('Home position', 'Please put motor in home position.');
         self.galil_handle.GCommand('DP 0')      # Define 0 pos
-        self.galil_handle.GCommand('SHA')       # Initialize motor A
+        #self.galil_handle.GCommand('SHA')       # Initialize motor A
+        
+        #self.galil_handle.GCommand('PRA = 4096')
+        #self.galil_handle.GCommand('BGA')
 
         return True
 
     def start_motion(self):
         self.controller_init()
+        # Use contour mode on the galil controller.
+        # Sample our signal at an appropriate rate and set the 
+        # position waypoints. See page 79 in the DMC manual.
+
+        self.galil_handle.GCommand('SHA')       # Initialize motor A
+        self.galil_handle.GCommand('CM A') # set contouring mode on A (this resets the contouring buffer)
+        self.galil_handle.GCommand('DT 2') # Set global time interval 2^2=4 ms.
+        self.galil_handle.GCommand('DT -1') # Pause to allow buffer to fill
+        prebuffer = True;
+
+
+        # while there is room left in contour buffer and positions are within bounds, keep fulling buffer.
+        duration = 10
+        nsamples = int(duration/0.0039)
+        values = 15.0*np.sin(np.linspace(0,1,nsamples)*10*2*np.pi)
+        i = 0;
+        old_absolute_steps = 0;
+        for i in range(0,nsamples):
+            if (prebuffer and (i > 100 or i >= nsamples)):
+                print('Resuming contour i: %d' % i)
+                prebuffer = False;
+                self.galil_handle.GCommand('DT 2')
+                self.record_position()
+
+            absolute_steps = int(values[i]*SYSTEM_STEPS_PER_MM)
+            steps_to_move = absolute_steps - old_absolute_steps
+            old_absolute_steps = absolute_steps
+        
+            if (int(self.galil_handle.GCommand('CM?')) > 509):
+                print('buffer starved (i = %d): %s' % (i, self.galil_handle.GCommand('CM?')))
+
+            while (int(self.galil_handle.GCommand('CM?')) < 10):
+                # buffer full
+                print('buffer full')
+
+                time.sleep(0.1); # Wait until more of buffer has been consumed.
+                
+            #print('steps_to_move: %d' % steps_to_move);
+            self.galil_handle.GCommand('CD %d' % steps_to_move) # Add to buffer
+
+        # wait until motion is done.
+        while (int(self.galil_handle.GCommand('CM?')) < 511):
+            print('waiting to complete: %s' % self.galil_handle.GCommand('CM?'))
+            time.sleep(0.1); 
+        
+        print('motion done.')
+        self.stop_motion()
     
     def stop_motion(self):
         self.galil_handle.GCommand('AB')
@@ -172,19 +230,15 @@ class MainWindow(QMainWindow):
         self.plotView.plot(result['timedeltas'], result['values'], name = 'Measurued', pen='r')
         
     def record_position(self):
-        self.controller_init()
+        #self.controller_init()
         frequency = self.sampleFrequencySpinBox.value();
 
         # TODO: Setup a thread to continously pull the current encoder position according to frequency.
-        self.recording_thread = ControllerRecordThread(galil_handle=self.galil_handle, frequency=frequency);
+        self.recording_thread = ControllerRecordThread(ip_address=self.ip_address, frequency=frequency);
         self.recording_thread.signal.connect(self.record_finished)
         self.recording_thread.start()
         
         print('RECORD! %g' % frequency)
-
-        # TODO: Start a thread for controlling movement.
-
-
 
     def generate_curve(self):
         self.legend.scene().removeItem(self.legend)
@@ -195,7 +249,7 @@ class MainWindow(QMainWindow):
         frequency = self.signalGen.frequencyDoubleSpinBox.value();
 
         sample_rate = 0.01
-        time = np.arange(0,1, sample_rate)
+        time = np.arange(0,10, sample_rate)
 
         y = 0;
 
