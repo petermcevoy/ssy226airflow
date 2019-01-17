@@ -28,6 +28,9 @@
        <property name="suffix">
         <string> mm</string>
        </property>
+       <property name="maximum">
+        <double>60.000000000000000</double>
+       </property>
        <property name="value">
         <double>10.000000000000000</double>
        </property>
@@ -45,8 +48,11 @@
        <property name="suffix">
         <string> Hz</string>
        </property>
-       <property name="value">
+       <property name="maximum">
         <double>10.000000000000000</double>
+       </property>
+       <property name="value">
+        <double>1.000000000000000</double>
        </property>
       </widget>
      </item>

@@ -18,6 +18,10 @@ import gclib # galil python module
 SYSTEM_MAGNETIC_PITCH = 24      #24 mm per encoder cycle
 SYSTEM_STEPS_PER_CYCLE = 4096   
 SYSTEM_STEPS_PER_MM = SYSTEM_STEPS_PER_CYCLE/SYSTEM_MAGNETIC_PITCH
+SYSTEM_MAX_STEPS = int(110*SYSTEM_STEPS_PER_MM)  #Do not allow acutator to move more than 120 mm from home.
+SYSTEM_MIN_STEPS = -10    #Do not allow acutator to move below 0 mm from home.
+SYSTEM_GENERATE_SAMPLE_RATE = 250    # Sample rate at which to genreate and control
+SYSTEM_MAX_DISPLACEMENT_PER_SAMPLE = 10000  # Set a limit to how much we can move in 1/250 = 4ms.
 
 class ControllerRecordThread(QtCore.QThread):
     signal = QtCore.pyqtSignal('PyQt_PyObject')
@@ -38,16 +42,19 @@ class ControllerRecordThread(QtCore.QThread):
 
     def run(self):
         print('Recording Thread running...')
-        nsamples = int(10*self.frequency)
+        nsamples = int(4*self.frequency)
         start_timestamp = datetime.now()
         timestamps = np.zeros(nsamples)
-        values = np.zeros(nsamples)
+        pos_values = np.zeros(nsamples)
+        analog1_values = np.zeros(nsamples)
+        analog2_values = np.zeros(nsamples)
 
         for i in range(0,nsamples):
             t1 = datetime.now()
             timestamps[i] = (datetime.now() - start_timestamp).total_seconds()
-            value = self.galil_handle.GCommand('TP')
-            values[i] = float(value)
+            pos_values[i] = float(self.galil_handle.GCommand('TP'))
+            analog1_values[i] = float(self.galil_handle.GCommand('MG @AN[1]'))
+            analog2_values[i] = float(self.galil_handle.GCommand('MG @AN[2]'))
             t2 = datetime.now()
             exec_time = t2 - t1
             time.sleep(1.0/self.frequency - exec_time.total_seconds())
@@ -56,10 +63,11 @@ class ControllerRecordThread(QtCore.QThread):
         #helper = np.vectorize(lambda x: x.total_seconds())
         #timedeltas = helper(timedeltas)
 
-
         data = {
                 'timedeltas': timestamps,
-                'values': np.array(values)/SYSTEM_STEPS_PER_MM,
+                'pos_values': np.array(pos_values)/SYSTEM_STEPS_PER_MM,
+                'analog1_values': np.array(analog1_values)/SYSTEM_STEPS_PER_MM,
+                'analog2_values': np.array(analog2_values)/SYSTEM_STEPS_PER_MM,
         }
         self.signal.emit(data)
 
@@ -68,6 +76,7 @@ class MainWindow(QMainWindow):
     galil_handle = None;
     galil_ip = None;
     recording_thread = None;
+    generated_curve = None;
 
     def __init__(self):
         super(MainWindow, self).__init__()
@@ -85,8 +94,11 @@ class MainWindow(QMainWindow):
         self.stopButton.clicked.connect(self.stop_motion)
         self.signalGenTypeComboBox.currentTextChanged.connect(self.change_signal_widget)
         self.recordButton.clicked.connect(self.record_position)
+        
+        self.customGen.browseFileButton.clicked.connect(self.customGen.browse_file)
        
         self.actionConnect.triggered.connect(self.open_connect_dialog)
+        self.actionExport_CSV.triggered.connect(self.export_csv)
 
 
     def open_connect_dialog(self):
@@ -127,9 +139,15 @@ class MainWindow(QMainWindow):
             print(self.galil_handle.GInfo())
             print('accepted!')
 
+    def export_csv(self):
+        filename = QtGui.QFileDialog.getSaveFileName(self, "Save File", "", "CSV (*.csv)");
+        if filename[0] != '':
+            a = np.asarray([ [1,2,3], [4,5,6], [7,8,9] ] )
+            np.savetxt(filename[0], a, delimiter=",", header="'Control signal', 'Encoder position', 'Input 1', 'Input 2'")
+
     def change_signal_widget(self):
         current_signal_type = self.signalGenTypeComboBox.currentText()
-        if current_signal_type == "Custom":
+        if current_signal_type == "From CSV":
             self.signalGenStackedWidget.setCurrentIndex(1)
         else: 
             self.signalGenStackedWidget.setCurrentIndex(0)
@@ -145,18 +163,18 @@ class MainWindow(QMainWindow):
         self.galil_handle.GCommand('MO')        # Turn of all motors
         self.galil_handle.GCommand('AF12')      # Set resolution sin/cos encoder
         self.galil_handle.GCommand('BM 4096')   # Set magnetic modulus (tau).
-        self.galil_handle.GCommand('KP 30')
+        self.galil_handle.GCommand('KP 150')
         self.galil_handle.GCommand('KI 0')
         self.galil_handle.GCommand('KD 0')
         self.galil_handle.GCommand('TL 5')      # current limit (1A)/(0.2A/V) = 5 V -> (TL n=5)
-        self.galil_handle.GCommand('TK 2')      # torque limit (2A)/(0.2A/V) = 10 V -> (TK n=10)
+        self.galil_handle.GCommand('TK 8')      # torque limit (2A)/(0.2A/V) = 10 V -> (TK n=10)
         self.galil_handle.GCommand('OE 1')      # motor off on error
         self.galil_handle.GCommand('MT 1')      # motor type
         self.galil_handle.GCommand('LC 1')      # reduce holding current
         self.galil_handle.GCommand('AC 20000')  # Acceleration
         self.galil_handle.GCommand('DC 20000')  # Decceleration
         self.galil_handle.GCommand('DC 18000')  # Speed
-        self.galil_handle.GCommand('IT .5')     # Motion smoothing
+        self.galil_handle.GCommand('IT .2')     # Motion smoothing
         self.galil_handle.GCommand('BAA')       # Specify A - axis for sinusoidal	 commutation
         self.galil_handle.GCommand('BMA = %d' % SYSTEM_STEPS_PER_CYCLE) # Specify counts/magnetic cycle
         self.galil_handle.GCommand('BZA = 4')   # Commutate motor using 3V
@@ -178,18 +196,34 @@ class MainWindow(QMainWindow):
         # position waypoints. See page 79 in the DMC manual.
 
         self.galil_handle.GCommand('SHA')       # Initialize motor A
+
+        if self.generated_curve is None:
+            alert('No curve to follow', 'Error: There is no curve to follow.')
+            return False;
+        
+        values = self.generated_curve
+
+        #move to initial position
+        old_absolute_steps = int(values[0]*SYSTEM_STEPS_PER_MM);
+        if old_absolute_steps < SYSTEM_MIN_STEPS or old_absolute_steps > SYSTEM_MAX_STEPS:
+            errorstr = 'Error: Control step is out of bounds %d (%g mm). Halting.' % (absolute_steps, absolute_steps/SYSTEM_STEPS_PER_MM);
+            print(errorstr);
+            alert('Error: Out of bounds', errorstr)
+            self.stop_motion()
+            return False;
+
+        self.galil_handle.GCommand('SPA=2000') # set speed
+        self.galil_handle.GCommand('PRA=%d' % old_absolute_steps) # move to inital position
+        self.galil_handle.GCommand('BG A') # Start motion
+        print('start pre motion')
+        self.galil_handle.GMotionComplete('A')
+        print('end pre motion')
+        
         self.galil_handle.GCommand('CM A') # set contouring mode on A (this resets the contouring buffer)
-        self.galil_handle.GCommand('DT 2') # Set global time interval 2^2=4 ms.
         self.galil_handle.GCommand('DT -1') # Pause to allow buffer to fill
         prebuffer = True;
 
-
-        # while there is room left in contour buffer and positions are within bounds, keep fulling buffer.
-        duration = 10
-        nsamples = int(duration/0.0039)
-        values = 15.0*np.sin(np.linspace(0,1,nsamples)*10*2*np.pi)
-        i = 0;
-        old_absolute_steps = 0;
+        nsamples = len(values)
         for i in range(0,nsamples):
             if (prebuffer and (i > 100 or i >= nsamples)):
                 print('Resuming contour i: %d' % i)
@@ -200,6 +234,22 @@ class MainWindow(QMainWindow):
             absolute_steps = int(values[i]*SYSTEM_STEPS_PER_MM)
             steps_to_move = absolute_steps - old_absolute_steps
             old_absolute_steps = absolute_steps
+
+            # Saftey checks!
+            if absolute_steps < SYSTEM_MIN_STEPS or absolute_steps > SYSTEM_MAX_STEPS:
+                errorstr = 'Error: Control step is out of bounds %d (%g mm). Halting.' % (absolute_steps, absolute_steps/SYSTEM_STEPS_PER_MM);
+                print(errorstr);
+                alert('Error: Out of bounds', errorstr)
+                self.stop_motion()
+                return False;
+
+            if steps_to_move > SYSTEM_MAX_DISPLACEMENT_PER_SAMPLE:
+                errorstr = 'Error: Control step is too fast %d steps in 4ms (%g mm/s). Halting.' % (steps_to_move, steps_to_move/SYSTEM_STEPS_PER_MM);
+                print(errorstr);
+                alert('Error: Speed limit', errorstr)
+                self.stop_motion()
+                return False;
+            
         
             if (int(self.galil_handle.GCommand('CM?')) > 509):
                 print('buffer starved (i = %d): %s' % (i, self.galil_handle.GCommand('CM?')))
@@ -210,7 +260,6 @@ class MainWindow(QMainWindow):
 
                 time.sleep(0.1); # Wait until more of buffer has been consumed.
                 
-            #print('steps_to_move: %d' % steps_to_move);
             self.galil_handle.GCommand('CD %d' % steps_to_move) # Add to buffer
 
         # wait until motion is done.
@@ -227,7 +276,9 @@ class MainWindow(QMainWindow):
         
     def record_finished(self, result):
         print('Finished recording: %s' % str(result))
-        self.plotView.plot(result['timedeltas'], result['values'], name = 'Measurued', pen='r')
+        self.plotView.plot(result['timedeltas'], result['pos_values'], name = 'Measurued', pen='r', symbol='+')
+        self.plotView.plot(result['timedeltas'], result['analog1_values'], name = 'Analog input 1', pen='y')
+        self.plotView.plot(result['timedeltas'], result['analog2_values'], name = 'Analog input 2', pen='y')
         
     def record_position(self):
         #self.controller_init()
@@ -247,24 +298,27 @@ class MainWindow(QMainWindow):
 
         amplitude = self.signalGen.amplitudeDoubleSpinBox.value();
         frequency = self.signalGen.frequencyDoubleSpinBox.value();
+        duration  = self.signalGen.durationDoubleSpinBox.value();
 
-        sample_rate = 0.01
-        time = np.arange(0,10, sample_rate)
+        sample_interval = 1/SYSTEM_GENERATE_SAMPLE_RATE - 0.0001
+        timevec = np.arange(0, duration, sample_interval)
 
         y = 0;
 
         current_signal_type = self.signalGenTypeComboBox.currentText()
         if current_signal_type == "Sine":
-            y = amplitude*np.sin(time*frequency*2*np.pi)
+            y = amplitude*(1+np.sin(timevec*frequency*2*np.pi))
         elif current_signal_type == "Triangle":
-            print("TODO!")
+            y = amplitude*triangle2(timevec, frequency)
         elif current_signal_type == "Custom":
             print("TODO!")
             print("Custom gen.gen")
         
-        self.plotView.plot(time, y, name='Target curve')
+        self.plotView.plot(timevec, y, name='Target curve')
         self.plotView.setLabel('left', 'Position [mm]')
         self.plotView.setLabel('bottom', 'Time [s]')
+
+        self.generated_curve = y;
 
         signal_type = str(self.signalGenTypeComboBox.currentText())
 
@@ -277,11 +331,19 @@ def alert(titlestr, msgstr):
     msg_box.setText(msgstr);
     msg_box.exec();
 
-def triangle2(length, amplitude):
-    section = length // 4
-    x = np.linspace(0, amplitude, section+1)
-    mx = -x
-    return np.r_[x, x[-2::-1], mx[1:], mx[-2:0:-1]]
+def triangle2(timevec, frequency):
+    y = np.zeros(len(timevec))
+    for i, t in enumerate(timevec):
+        tmod = t*frequency % 1
+        k = 4
+        c = 0
+        if tmod > 0.5:
+            k = -4
+            c = 4
+
+        y[i] = k*tmod + c
+        
+    return y
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

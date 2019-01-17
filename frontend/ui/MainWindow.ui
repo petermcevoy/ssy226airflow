@@ -78,6 +78,7 @@
     </property>
     <addaction name="actionOpen"/>
     <addaction name="actionConnect"/>
+    <addaction name="actionExport_CSV"/>
    </widget>
    <addaction name="menuFile"/>
   </widget>
@@ -139,7 +140,12 @@
          </item>
          <item>
           <property name="text">
-           <string>Custom</string>
+           <string>Ramp</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>From CSV</string>
           </property>
          </item>
         </widget>
@@ -233,6 +239,11 @@
   <action name="actionConnect">
    <property name="text">
     <string>Connect</string>
+   </property>
+  </action>
+  <action name="actionExport_CSV">
+   <property name="text">
+    <string>Export CSV</string>
    </property>
   </action>
  </widget>

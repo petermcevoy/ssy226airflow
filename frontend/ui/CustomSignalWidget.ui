@@ -13,18 +13,38 @@
   <property name="windowTitle">
    <string>Form</string>
   </property>
-  <layout class="QGridLayout" name="gridLayout">
-   <item row="0" column="0">
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QLabel" name="label">
+     <property name="text">
+      <string>Import a position curve from a CSV file. CSV file must be generated with a sample rate of 250Hz (4ms time interval between samples). First column will be interpreted as absolute position in mm.</string>
+     </property>
+     <property name="scaledContents">
+      <bool>false</bool>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
     <layout class="QFormLayout" name="formLayout">
      <item row="0" column="0">
-      <widget class="QLabel" name="customSignalLabel">
+      <widget class="QLabel" name="filePathLabel">
        <property name="text">
-        <string>CustomSignal</string>
+        <string>File Path</string>
        </property>
       </widget>
      </item>
      <item row="0" column="1">
-      <widget class="QLineEdit" name="customSignalLineEdit"/>
+      <widget class="QLineEdit" name="filePathLineEdit"/>
+     </item>
+     <item row="1" column="1">
+      <widget class="QPushButton" name="browseFileButton">
+       <property name="text">
+        <string>Browse</string>
+       </property>
+      </widget>
      </item>
     </layout>
    </item>
