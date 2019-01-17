@@ -26,12 +26,14 @@ SYSTEM_MAX_DISPLACEMENT_PER_SAMPLE = 10000  # Set a limit to how much we can mov
 class ControllerRecordThread(QtCore.QThread):
     signal = QtCore.pyqtSignal('PyQt_PyObject')
     recording = False;
-    frequency = 100; #Hz
+    #frequency = 100; #Hz
     galil_handle = None;
 
-    def __init__(self, ip_address=None, frequency=100):
+    def __init__(self, ip_address=None, frequency=100, duration=2):
         QtCore.QThread.__init__(self)
         self.frequency = frequency
+        self.duration = duration
+
         # Caller is responsible to make sure that ip address is ok
         self.galil_handle = gclib.py();
         try:
@@ -42,32 +44,40 @@ class ControllerRecordThread(QtCore.QThread):
 
     def run(self):
         print('Recording Thread running...')
-        nsamples = int(4*self.frequency)
+        nsamples = int(self.duration*self.frequency)
         start_timestamp = datetime.now()
-        timestamps = np.zeros(nsamples)
+        
+        pos_timestamps = np.zeros(nsamples)
         pos_values = np.zeros(nsamples)
+
+        analog1_timestamps = np.zeros(nsamples)
         analog1_values = np.zeros(nsamples)
+
+        analog2_timestamps = np.zeros(nsamples)
         analog2_values = np.zeros(nsamples)
 
         for i in range(0,nsamples):
             t1 = datetime.now()
-            timestamps[i] = (datetime.now() - start_timestamp).total_seconds()
+            pos_timestamps[i] = (datetime.now() - start_timestamp).total_seconds()
             pos_values[i] = float(self.galil_handle.GCommand('TP'))
+            
+            analog1_timestamps[i] = (datetime.now() - start_timestamp).total_seconds()
             analog1_values[i] = float(self.galil_handle.GCommand('MG @AN[1]'))
-            analog2_values[i] = float(self.galil_handle.GCommand('MG @AN[2]'))
+            
+            #analog2_timestamps[i] = (datetime.now() - start_timestamp).total_seconds()
+            #analog2_values[i] = float(self.galil_handle.GCommand('MG @AN[2]'))
+            
             t2 = datetime.now()
             exec_time = t2 - t1
             time.sleep(1.0/self.frequency - exec_time.total_seconds())
         
-        #timedeltas = (np.array(timestamps) - start_timestamp)
-        #helper = np.vectorize(lambda x: x.total_seconds())
-        #timedeltas = helper(timedeltas)
-
         data = {
-                'timedeltas': timestamps,
+                'pos_timestamps': pos_timestamps,
                 'pos_values': np.array(pos_values)/SYSTEM_STEPS_PER_MM,
-                'analog1_values': np.array(analog1_values)/SYSTEM_STEPS_PER_MM,
-                'analog2_values': np.array(analog2_values)/SYSTEM_STEPS_PER_MM,
+                'analog1_timestamps': np.array(analog1_timestamps),
+                'analog1_values': np.array(analog1_values),
+                'analog2_timestamps': np.array(analog2_timestamps),
+                'analog2_values': np.array(analog2_values),
         }
         self.signal.emit(data)
 
@@ -76,7 +86,11 @@ class MainWindow(QMainWindow):
     galil_handle = None;
     galil_ip = None;
     recording_thread = None;
-    generated_curve = None;
+    generated_curve = [];
+    timestamp_generated_curve = [];
+    plot_position = None;
+    plot_analog_input = None;
+    latest_record_data = None;
 
     def __init__(self):
         super(MainWindow, self).__init__()
@@ -86,10 +100,27 @@ class MainWindow(QMainWindow):
         image = QtGui.QImage(100, 100, QtGui.QImage.Format_Mono)
         image.fill(0)
         
-        self.legend = self.plotView.addLegend()
+        l = pg.GraphicsLayout()
+        self.plotView.setCentralItem(l)
+        self.plotView.show()
+
+        self.plot_position = l.addPlot(0,0)
+        self.plot_analog_input = l.addPlot(1,0)
+
+        self.plot_position.setTitle('Position') 
+        self.plot_position.setLabel('left', 'Position [mm]')
+        self.plot_position.setLabel('bottom', 'Time [s]')
+
+        self.plot_analog_input.setTitle('Analog input') 
+        self.plot_analog_input.setLabel('left', 'Voltage [V]')
+        self.plot_analog_input.setLabel('bottom', 'Time [s]')
+
+        self.plot_position.addLegend()
+        self.plot_analog_input.addLegend()
 
         # Setup signals and slots
         self.generateButton.clicked.connect(self.generate_curve)
+        self.clearButton.clicked.connect(self.clear_plots)
         self.startButton.clicked.connect(self.start_motion)
         self.stopButton.clicked.connect(self.stop_motion)
         self.signalGenTypeComboBox.currentTextChanged.connect(self.change_signal_widget)
@@ -139,11 +170,29 @@ class MainWindow(QMainWindow):
             print(self.galil_handle.GInfo())
             print('accepted!')
 
+    def clear_plots(self):
+        self.plot_position.legend.scene().removeItem(self.plot_position.legend)
+        self.plot_position.clear()
+        self.plot_position.addLegend()
+        
+        self.plot_analog_input.legend.scene().removeItem(self.plot_analog_input.legend)
+        self.plot_analog_input.clear()
+        self.plot_analog_input.addLegend()
+
     def export_csv(self):
         filename = QtGui.QFileDialog.getSaveFileName(self, "Save File", "", "CSV (*.csv)");
         if filename[0] != '':
-            a = np.asarray([ [1,2,3], [4,5,6], [7,8,9] ] )
-            np.savetxt(filename[0], a, delimiter=",", header="'Control signal', 'Encoder position', 'Input 1', 'Input 2'")
+            arr = np.asarray([ 
+                self.timestamp_generated_curve,
+                self.generated_curve, 
+                self.latest_record_data['pos_timestamps'],
+                self.latest_record_data['pos_values'],
+                self.latest_record_data['analog1_timestamps'],
+                self.latest_record_data['analog1_values']
+                ])
+            max_len = np.max([len(a) for a in arr])
+            arr = np.asarray([np.pad(a, (0, max_len - len(a)), 'constant', constant_values=0) for a in arr]).T
+            np.savetxt(filename[0], arr, delimiter=",", header="'Timestamp Control signal', Control signal', 'Timestamp Encoder position', 'Encoder position', 'Timestamp Input 1', 'Input 1'")
 
     def change_signal_widget(self):
         current_signal_type = self.signalGenTypeComboBox.currentText()
@@ -197,7 +246,7 @@ class MainWindow(QMainWindow):
 
         self.galil_handle.GCommand('SHA')       # Initialize motor A
 
-        if self.generated_curve is None:
+        if not self.generated_curve:
             alert('No curve to follow', 'Error: There is no curve to follow.')
             return False;
         
@@ -276,25 +325,29 @@ class MainWindow(QMainWindow):
         
     def record_finished(self, result):
         print('Finished recording: %s' % str(result))
-        self.plotView.plot(result['timedeltas'], result['pos_values'], name = 'Measurued', pen='r', symbol='+')
-        self.plotView.plot(result['timedeltas'], result['analog1_values'], name = 'Analog input 1', pen='y')
-        self.plotView.plot(result['timedeltas'], result['analog2_values'], name = 'Analog input 2', pen='y')
+        self.latest_record_data = result;
+        self.plot_position.plot(result['pos_timestamps'], result['pos_values'], name = 'Measured position', pen='r', symbol='+')
+        self.plot_analog_input.plot(result['analog1_timestamps'], result['analog1_values'], name = 'Analog input 1', pen='y')
+        #self.plot_analog_input.plot(result['analog2_timestamps'], result['analog2_values'], name = 'Analog input 2', pen='y')
         
     def record_position(self):
         #self.controller_init()
-        frequency = self.sampleFrequencySpinBox.value();
+        frequency = self.sampleFrequencySpinBox.value()
+        duration = 2.0
+        if self.generated_curve == False: 
+            duration = len(self.generated_curve)/SYSTEM_GENERATE_SAMPLE_RATE
 
         # TODO: Setup a thread to continously pull the current encoder position according to frequency.
-        self.recording_thread = ControllerRecordThread(ip_address=self.ip_address, frequency=frequency);
+        self.recording_thread = ControllerRecordThread(ip_address=self.ip_address, frequency=frequency, duration=duration);
         self.recording_thread.signal.connect(self.record_finished)
         self.recording_thread.start()
         
         print('RECORD! %g' % frequency)
 
     def generate_curve(self):
-        self.legend.scene().removeItem(self.legend)
-        self.legend = self.plotView.addLegend()
-        self.plotView.clear()
+        self.plot_position.legend.scene().removeItem(self.plot_position.legend)
+        self.plot_position.clear()
+        self.plot_position.addLegend()
 
         amplitude = self.signalGen.amplitudeDoubleSpinBox.value();
         frequency = self.signalGen.frequencyDoubleSpinBox.value();
@@ -314,11 +367,10 @@ class MainWindow(QMainWindow):
             print("TODO!")
             print("Custom gen.gen")
         
-        self.plotView.plot(timevec, y, name='Target curve')
-        self.plotView.setLabel('left', 'Position [mm]')
-        self.plotView.setLabel('bottom', 'Time [s]')
+        self.plot_position.plot(timevec, y, name='Target curve')
 
         self.generated_curve = y;
+        self.timestamp_generated_curve = timevec;
 
         signal_type = str(self.signalGenTypeComboBox.currentText())
 
