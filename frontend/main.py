@@ -16,7 +16,7 @@ import time
 import gclib # galil python module
 
 SYSTEM_MAGNETIC_PITCH = 24      #24 mm per encoder cycle
-SYSTEM_STEPS_PER_CYCLE = 4096   
+SYSTEM_STEPS_PER_CYCLE = 4096
 SYSTEM_STEPS_PER_MM = SYSTEM_STEPS_PER_CYCLE/SYSTEM_MAGNETIC_PITCH
 SYSTEM_MAX_STEPS = int(110*SYSTEM_STEPS_PER_MM)  #Do not allow acutator to move more than 120 mm from home.
 SYSTEM_MIN_STEPS = -10    #Do not allow acutator to move below 0 mm from home.
@@ -26,7 +26,6 @@ SYSTEM_MAX_DISPLACEMENT_PER_SAMPLE = 10000  # Set a limit to how much we can mov
 class ControllerRecordThread(QtCore.QThread):
     signal = QtCore.pyqtSignal('PyQt_PyObject')
     recording = False;
-    #frequency = 100; #Hz
     galil_handle = None;
 
     def __init__(self, ip_address=None, frequency=100, duration=2):
@@ -55,6 +54,9 @@ class ControllerRecordThread(QtCore.QThread):
 
         analog2_timestamps = np.zeros(nsamples)
         analog2_values = np.zeros(nsamples)
+        
+        error_timestamps = np.zeros(nsamples)
+        error_values = np.zeros(nsamples)
 
         for i in range(0,nsamples):
             t1 = datetime.now()
@@ -67,6 +69,9 @@ class ControllerRecordThread(QtCore.QThread):
             #analog2_timestamps[i] = (datetime.now() - start_timestamp).total_seconds()
             #analog2_values[i] = float(self.galil_handle.GCommand('MG @AN[2]'))
             
+            error_timestamps[i] = (datetime.now() - start_timestamp).total_seconds()
+            error_values[i] = float(self.galil_handle.GCommand('TE'))
+            
             t2 = datetime.now()
             exec_time = t2 - t1
             time.sleep(1.0/self.frequency - exec_time.total_seconds())
@@ -78,6 +83,8 @@ class ControllerRecordThread(QtCore.QThread):
                 'analog1_values': np.array(analog1_values),
                 'analog2_timestamps': np.array(analog2_timestamps),
                 'analog2_values': np.array(analog2_values),
+                'error_timestamps': np.array(error_timestamps),
+                'error_values': np.array(error_values),
         }
         self.signal.emit(data)
 
@@ -188,11 +195,16 @@ class MainWindow(QMainWindow):
                 self.latest_record_data['pos_timestamps'],
                 self.latest_record_data['pos_values'],
                 self.latest_record_data['analog1_timestamps'],
-                self.latest_record_data['analog1_values']
+                self.latest_record_data['analog1_values'],
+                self.latest_record_data['error_timestamps'],
+                self.latest_record_data['error_values']
                 ])
+
+            # Pad the different vectors with zeros, so that all vectors are the same length.
             max_len = np.max([len(a) for a in arr])
             arr = np.asarray([np.pad(a, (0, max_len - len(a)), 'constant', constant_values=0) for a in arr]).T
-            np.savetxt(filename[0], arr, delimiter=",", header="'Timestamp Control signal', Control signal', 'Timestamp Encoder position', 'Encoder position', 'Timestamp Input 1', 'Input 1'")
+            
+            np.savetxt(filename[0], arr, delimiter=",", header="'Timestamp Control signal', Control signal', 'Timestamp Encoder position', 'Encoder position', 'Timestamp Input 1', 'Input 1', 'Timestamp Error', 'Error Steps'")
 
     def change_signal_widget(self):
         current_signal_type = self.signalGenTypeComboBox.currentText()
@@ -246,7 +258,7 @@ class MainWindow(QMainWindow):
 
         self.galil_handle.GCommand('SHA')       # Initialize motor A
 
-        if not self.generated_curve:
+        if len(self.generated_curve) == 0:
             alert('No curve to follow', 'Error: There is no curve to follow.')
             return False;
         
@@ -334,7 +346,7 @@ class MainWindow(QMainWindow):
         #self.controller_init()
         frequency = self.sampleFrequencySpinBox.value()
         duration = 2.0
-        if self.generated_curve == False: 
+        if len(self.generated_curve) != 0: 
             duration = len(self.generated_curve)/SYSTEM_GENERATE_SAMPLE_RATE
 
         # TODO: Setup a thread to continously pull the current encoder position according to frequency.
