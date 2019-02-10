@@ -12,6 +12,7 @@ import numpy as np
 
 from datetime import datetime
 import time
+import csv
 
 import gclib # galil python module
 
@@ -134,6 +135,7 @@ class MainWindow(QMainWindow):
         self.recordButton.clicked.connect(self.record_position)
         
         self.customGen.browseFileButton.clicked.connect(self.customGen.browse_file)
+        self.customGen.loadCSVButton.clicked.connect(self.generate_curve)
        
         self.actionConnect.triggered.connect(self.open_connect_dialog)
         self.actionExport_CSV.triggered.connect(self.export_csv)
@@ -368,16 +370,27 @@ class MainWindow(QMainWindow):
         sample_interval = 1/SYSTEM_GENERATE_SAMPLE_RATE - 0.0001
         timevec = np.arange(0, duration, sample_interval)
 
-        y = 0;
+        y = 0
 
         current_signal_type = self.signalGenTypeComboBox.currentText()
         if current_signal_type == "Sine":
             y = amplitude*(1+np.sin(timevec*frequency*2*np.pi))
         elif current_signal_type == "Triangle":
             y = amplitude*triangle2(timevec, frequency)
-        elif current_signal_type == "Custom":
-            print("TODO!")
-            print("Custom gen.gen")
+        elif current_signal_type == "From CSV":
+            load_path = self.customGen.filePathLineEdit.text()
+            with open(load_path, 'r') as f:
+                reader = csv.reader(f)
+                # Set timevec to be the correct
+                # assume csv has 250Hz sample rate
+                nsamples = sum(1 for row in reader)
+                f.seek(0)
+                y = np.zeros(nsamples)
+                duration = nsamples/250
+                timevec = np.linspace(0, duration, nsamples)
+                for i_row, row in enumerate(reader):
+                    y[i_row] = row[0]
+        
         
         self.plot_position.plot(timevec, y, name='Target curve')
 

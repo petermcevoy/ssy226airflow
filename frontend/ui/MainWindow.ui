@@ -140,11 +140,6 @@
          </item>
          <item>
           <property name="text">
-           <string>Ramp</string>
-          </property>
-         </item>
-         <item>
-          <property name="text">
            <string>From CSV</string>
           </property>
          </item>
