@@ -1,5 +1,4 @@
 import sys
-#from ui.MainWindow import MainWindow
 from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QGridLayout, QWidget, QComboBox
 from PyQt5 import QtWidgets, QtCore
 from PyQt5 import QtGui, uic
@@ -16,6 +15,7 @@ import csv
 
 import gclib # galil python module
 
+# Design platform system parameters and limits.
 SYSTEM_MAGNETIC_PITCH = 24      #24 mm per encoder cycle
 SYSTEM_STEPS_PER_CYCLE = 4096
 SYSTEM_STEPS_PER_MM = SYSTEM_STEPS_PER_CYCLE/SYSTEM_MAGNETIC_PITCH
@@ -88,6 +88,7 @@ class ControllerRecordThread(QtCore.QThread):
                 'error_values': np.array(error_values),
         }
         self.signal.emit(data)
+
 
 class MainWindow(QMainWindow):
     legend = None;
